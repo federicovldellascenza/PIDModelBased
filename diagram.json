@@ -9,11 +9,15 @@
       "top": -37.71,
       "left": -264.45,
       "attrs": {}
-    }
+    },
+    { "type": "wokwi-potentiometer", "id": "pot1", "top": 0, "left": 0, "attrs": { "value": "0" } }
   ],
   "connections": [
     [ "$serialMonitor:TX", "nucleo:PA3", "", [] ],
-    [ "$serialMonitor:RX", "nucleo:PA2", "", [] ]
+    [ "$serialMonitor:RX", "nucleo:PA2", "", [] ],
+    [ "pot1:VCC", "nucleo:3V3", "red",   [ "v0" ] ],
+    [ "pot1:GND", "nucleo:GND", "black", [ "v0" ] ],
+    [ "pot1:SIG", "nucleo:PA1", "green", [ "v0" ] ]
   ],
   "dependencies": {}
 }

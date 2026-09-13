@@ -23,17 +23,27 @@
 /* USER CODE BEGIN Includes */
 
 #include <string.h>
+#include <stdio.h>
+#include <stdlib.h>  
 
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+typedef struct {
+    float K, tau, Ts;
+    float y_prev, u_prev;
+} Plant_t;
 
+typedef struct {
+    float Kp, Ki, Kd;
+    float integral, prev_error;
+} PID_t;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define ACTUATOR_VMAX 24.0f
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -42,13 +52,15 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+ADC_HandleTypeDef hadc1;
 
 I2C_HandleTypeDef hi2c1;
 
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-
+Plant_t motor_plant;
+PID_t speed_pid;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -56,7 +68,11 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_USART2_UART_Init(void);
+static void MX_ADC1_Init(void);
 /* USER CODE BEGIN PFP */
+
+float Plant_Update(Plant_t *p, float u);
+float PID_Compute(PID_t *pid, float error, float Ts);
 
 /* USER CODE END PFP */
 
@@ -95,6 +111,7 @@ int main(void)
   MX_GPIO_Init();
   MX_I2C1_Init();
   MX_USART2_UART_Init();
+  MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
 
   char msg[] = "Hello, Wokwi!\r\n";
@@ -104,11 +121,64 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+
+  float omega_max = 100.0f;  // velocita' massima plausibile del motore simulato, in rad/s
+  float setpoint = 0.0f;    // velocita' desiderata, in rad/s
+  int32_t y_sensed_adc = 0; // valore raw dell'ADC, corrispondente alla velocita' misurata dal trasduttore
+  uint16_t setpoint_adc = 0; // valore raw dell'ADC, corrispondente al setpoint
+  int32_t error_adc = 0;     // errore tra setpoint e velocita' misurata, in valori raw dell'ADC
+  float error = 0.0f;        // errore tra setpoint e velocita' misurata, in rad/s
+  float y = 0.0f;           // velocita' simulata del motore, in rad/s
+  float y_sensed = 0.0f;    // velocita' misurata dal trasduttore, in rad/s
+  float u = 0.0f;           // comando di velocita' calcolato dal PID, in rad/s
+  Plant_t motor_plant = {5.0f, 0.1f, 0.01f, 0.0f, 0.0f}; // K=1, tau=0.1s, Ts=0.01s, y_prev=0, u_prev=0
+  PID_t speed_pid = {0.8f, 12.0f, 0.01f, 0.0f, 0.0f}; // Kp=0.5, Ki=0.1, Kd=0.01, integral=0, prev_error=0
+
   while (1)
   {
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+
+    y = Plant_Update(&motor_plant, u); // Usiamo un plant fittizio per simulare il comportamento del motore (primo ordine, trascuriamo l'induttanza)
+    
+    // Ipotizziamo che il trasduttore della velocità angolare del motore sia H(s) = 1, guadagno unitario perfetto.
+    y_sensed = y;
+
+    // Simuliamo la lettura dell'ADC come un valore proporzionale alla velocità misurata
+    y_sensed_adc = (y_sensed / omega_max) * 4095.0f; 
+
+    // Leggiamo da ADC il valore del setpoint desiderato, che è proporzionale alla tensione dal potenziometro
+    HAL_ADC_Start(&hadc1);
+
+    if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK)
+    {
+      setpoint_adc = HAL_ADC_GetValue(&hadc1);
+      setpoint = (setpoint_adc / 4095.0f) * omega_max; // Convertiamo il valore raw dell'ADC in rad/s
+    }
+
+    HAL_ADC_Stop(&hadc1);
+
+    error_adc = setpoint_adc - y_sensed_adc;
+
+    error = (error_adc / 4095.0f) * omega_max; // Convertiamo l'errore in rad/s
+
+    u = PID_Compute(&speed_pid, error, motor_plant.Ts);
+    
+    HAL_Delay((uint32_t)(motor_plant.Ts * 1000));  // forza Ts = 10ms per iterazione
+
+    char msg[80];
+    
+    int sp_int = (int)(setpoint * 100);
+    int y_int = (int)(y * 100);
+    int u_int = (int)(u * 100);
+    int err_int = (int)(error * 100);
+
+    snprintf(msg, sizeof(msg), "SP:%d.%02d Y:%d.%02d U:%d.%02d ERR:%d.%02d\r\n",
+         sp_int/100, abs(sp_int%100), y_int/100, abs(y_int%100),
+         u_int/100, abs(u_int%100), err_int/100, abs(err_int%100));
+    
+    HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
   }
   /* USER CODE END 3 */
 }
@@ -147,6 +217,65 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief ADC1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC1_Init(void)
+{
+
+  /* USER CODE BEGIN ADC1_Init 0 */
+
+  /* USER CODE END ADC1_Init 0 */
+
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN ADC1_Init 1 */
+
+  /* USER CODE END ADC1_Init 1 */
+
+  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
+  */
+  hadc1.Instance = ADC1;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV2;
+  hadc1.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.ScanConvMode = ADC_SCAN_DISABLE;
+  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  hadc1.Init.LowPowerAutoWait = DISABLE;
+  hadc1.Init.LowPowerAutoPowerOff = DISABLE;
+  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.NbrOfConversion = 1;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc1.Init.DMAContinuousRequests = DISABLE;
+  hadc1.Init.Overrun = ADC_OVR_DATA_PRESERVED;
+  hadc1.Init.SamplingTimeCommon1 = ADC_SAMPLETIME_1CYCLE_5;
+  hadc1.Init.SamplingTimeCommon2 = ADC_SAMPLETIME_1CYCLE_5;
+  hadc1.Init.OversamplingMode = DISABLE;
+  hadc1.Init.TriggerFrequencyMode = ADC_TRIGGER_FREQ_HIGH;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_1;
+  sConfig.Rank = ADC_REGULAR_RANK_1;
+  sConfig.SamplingTime = ADC_SAMPLINGTIME_COMMON_1;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC1_Init 2 */
+
+  /* USER CODE END ADC1_Init 2 */
+
 }
 
 /**
@@ -275,7 +404,32 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+float Plant_Update(Plant_t *p, float u) {
+    float a = (2.0f * p->tau) / p->Ts;
+    float y = (p->K * u + p->K * p->u_prev - (1.0f - a) * p->y_prev) / (a + 1.0f);
 
+    p->y_prev = y;
+    p->u_prev = u;
+    return y;
+}
+
+float PID_Compute(PID_t *pid, float error, float Ts) {
+
+    pid->integral += error * Ts;
+    float derivative = (error - pid->prev_error) / Ts;
+
+    float C_output = pid->Kp * error + pid->Ki * pid->integral + pid->Kd * derivative;
+
+    if (C_output > ACTUATOR_VMAX) {
+        C_output = ACTUATOR_VMAX;
+    } else if (C_output < -ACTUATOR_VMAX) {
+        C_output = -ACTUATOR_VMAX;
+    }
+
+    pid->prev_error = error;
+
+    return C_output;
+}
 /* USER CODE END 4 */
 
 /**
